@@ -3,13 +3,11 @@ package io.servicetalk.concurrent.api;
 
 import io.servicetalk.concurrent.PublisherSource.Subscriber;
 import io.servicetalk.concurrent.PublisherSource.Subscription;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import io.servicetalk.concurrent.api.ThreadSafeBuffer.Flush;
 
 import javax.annotation.Nullable;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.function.Consumer;
 
 import static java.util.Objects.requireNonNull;
@@ -19,15 +17,14 @@ import static java.util.Objects.requireNonNull;
 // timed flushing / maximum delay / thread to make them happen
 // Cancellable on subscription
 // JDK 9? multiply exact?
-// Log level
+// Log level on tsb
 // should exceptions re-thrown, onError to onError, be nested?
+// tests with exceptions onError etc.
 
 public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
     private final Consumer<Subscriber<? super T>> source;
     private final int targetChunkSize;
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(BufferedPublisher.class);
 
     public BufferedPublisher(Consumer<Subscriber<? super T>> source,
                              int targetChunkSize,
@@ -51,7 +48,7 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
     public class BufferedSubscription {
 
-        private final List<T> buffer = new ArrayList<>(targetChunkSize);
+        private final ThreadSafeBuffer<T> buffer = new ThreadSafeBuffer<>(targetChunkSize);
         private Subscription itemsSubscription = new NullSubscription();
         private Subscriber<? super Iterable<T>> chunksSubscriber = new NullSubscriber<>();
 
@@ -59,15 +56,6 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
             source.accept(new Filler());
             chunksSubscriber = destination;
             chunksSubscriber.onSubscribe(new Drainer());
-        }
-
-        private void log(String format, Object... args) {
-            // TODO: Log level wants to be lower
-            LOGGER.info(state() + " " + format, args);
-        }
-
-        private String state() {
-            return "[" + buffer.size() + "/" + targetChunkSize + "]";
         }
 
         class Filler implements Subscriber<T> {
@@ -79,35 +67,29 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
             @Override
             public void onNext(@Nullable T item) {
-                buffer.add(item);
-                log("Received item: " + item);
-                maybeFlush();
+                buffer(item, Flush.WHEN_FULL);
             }
 
             @Override
             public void onError(Throwable error) {
                 chunksSubscriber.onError(error);
-                log("Error propagated: {}", error);
             }
 
             @Override
             public void onComplete() {
-                log("Completed items");
+                buffer(null, Flush.ALWAYS);
                 chunksSubscriber.onComplete();
             }
 
-            // TODO: thread safety
-            private void maybeFlush() {
-                if (buffer.size() < targetChunkSize) {
-                    return;
+            /**
+            // So that we may keep the locking in one place, and thus maybe a little more ordered and under control,
+            // this is the only place where you may take the lock or interact with the buffer
+            */
+            private void buffer(@Nullable T item, Flush mode) {
+                List<T> flushed = buffer.enqueue(item, mode);
+                if (flushed != null) {
+                    chunksSubscriber.onNext(flushed);
                 }
-
-                // lock?  because buffer may accumulate after copy?
-                List<T> copy = new ArrayList<T>(buffer);
-                buffer.clear();
-                // end lock?
-                chunksSubscriber.onNext(copy);
-                log("Flushed {} items", copy.size());
             }
 
         }
@@ -124,7 +106,6 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
             public void request(long chunksCount) {
                 long itemsCount = chunksToItems(chunksCount);
                 itemsSubscription.request(itemsCount);
-                log("Request for {} chunks satisfied by request for {} items", chunksCount, itemsCount);
             }
 
             private long chunksToItems(long chunkCount) {
