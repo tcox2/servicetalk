@@ -2335,6 +2335,13 @@ public abstract class Publisher<T> {
     }
 
     /**
+    * TODO
+    */
+    public final Publisher<Iterable<T>> buffer(int targetChunkSize, Duration maximumDelay) {
+        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, maximumDelay);
+    }
+
+    /**
      * Invokes the {@code onSubscribe} {@link Consumer} argument <strong>before</strong>
      * {@link Subscriber#onSubscribe(PublisherSource.Subscription)} is called for {@link Subscriber}s of the returned
      * {@link Publisher}.
