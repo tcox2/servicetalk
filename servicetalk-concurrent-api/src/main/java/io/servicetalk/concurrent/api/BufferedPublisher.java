@@ -3,34 +3,50 @@ package io.servicetalk.concurrent.api;
 
 import io.servicetalk.concurrent.PublisherSource.Subscriber;
 import io.servicetalk.concurrent.PublisherSource.Subscription;
+import io.servicetalk.concurrent.api.ThreadSafeBuffer.Cause;
 import io.servicetalk.concurrent.api.ThreadSafeBuffer.Flush;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+
 
 import static java.util.Objects.requireNonNull;
 
 // TODO:
-// Thread safety
 // timed flushing / maximum delay / thread to make them happen
-// Cancellable on subscription
 // JDK 9? multiply exact?
 // Log level on tsb
 // should exceptions re-thrown, onError to onError, be nested?
 // tests with exceptions onError etc.
+// TIMING FLUSH ON TIME
+// ScheduledThreadPoolExecutor?
+// log level
+
 
 public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(BufferedPublisher.class);
+
     private final Consumer<Subscriber<? super T>> source;
     private final int targetChunkSize;
+    private final ScheduledThreadPoolExecutor scheduler;
+    private final Duration maximumDelay;
 
     public BufferedPublisher(Consumer<Subscriber<? super T>> source,
                              int targetChunkSize,
-                             Duration maximumDelay) {
+                             Duration maximumDelay,
+                             ScheduledThreadPoolExecutor scheduler) {
         requireNonNull(maximumDelay);
         requireNonNull(source);
+        requireNonNull(scheduler);
+        requireNonNull(maximumDelay);
 
         if (targetChunkSize < 1) {
             throw new IllegalArgumentException("targetChunkSize must be one or greater");
@@ -38,6 +54,16 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
         this.source = source;
         this.targetChunkSize = targetChunkSize;
+
+        // buffer needs a 'last flush time' on it
+        // how to ensure re-schedule while also having reset() when a flush happens
+        // you can get queue and clear it?
+        // schedul at fixed blah, then clear+repopulate on another type of flush?
+        // on vcomplete or error -> tear down
+        // you get a schedlewd future!  xcan cancel it!
+        // executor.schedule()
+        this.scheduler = scheduler;
+        this.maximumDelay = maximumDelay;
     }
 
     @Override
@@ -51,11 +77,34 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
         private final ThreadSafeBuffer<T> buffer = new ThreadSafeBuffer<>(targetChunkSize);
         private Subscription itemsSubscription = new NullSubscription();
         private Subscriber<? super Iterable<T>> chunksSubscriber = new NullSubscriber<>();
+        private Runnable cancelTimeout = () -> {};
+        private final Filler filler = new Filler();
 
         public void subscribe(Subscriber<? super Iterable<T>> destination) {
-            source.accept(new Filler());
+            scheduleTimeout();
+            source.accept(filler);
             chunksSubscriber = destination;
             chunksSubscriber.onSubscribe(new Drainer());
+        }
+
+
+
+        private void resetTimeout(Cause cause) {
+            cancelTimeout.run();
+
+            if ( ! cause.isTerminal()) {
+                scheduleTimeout();
+            }
+        }
+
+        private void scheduleTimeout() {
+            ScheduledFuture<?> scheduledFuture = scheduler.schedule(() -> filler.flush(Cause.TIME_OUT), maximumDelay.toNanos(), TimeUnit.NANOSECONDS);
+            cancelTimeout = () -> {
+                if (scheduledFuture.cancel(false)) {
+                    LOGGER.info("Timeout was cancelled");
+                }
+            };
+            LOGGER.info("Timeout was scheduled");
         }
 
         class Filler implements Subscriber<T> {
@@ -67,27 +116,37 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
             @Override
             public void onNext(@Nullable T item) {
-                buffer(item, Flush.WHEN_FULL);
+                buffer(item, Flush.WHEN_FULL, Cause.ON_NEXT);
+
+                // Timeout experiment - recreate in a test
+                /*try {
+                    Thread.sleep(1_000);
+                } catch (InterruptedException e) {
+                }*/
+                // Timeout experiment - recreate in a test
+
             }
 
             @Override
             public void onError(Throwable error) {
+                cancelTimeout.run();
                 chunksSubscriber.onError(error);
             }
 
             @Override
             public void onComplete() {
-                buffer(null, Flush.ALWAYS);
+                flush(Cause.ON_COMPLETE);
                 chunksSubscriber.onComplete();
             }
 
-            /**
-            // So that we may keep the locking in one place, and thus maybe a little more ordered and under control,
-            // this is the only place where you may take the lock or interact with the buffer
-            */
-            private void buffer(@Nullable T item, Flush mode) {
-                List<T> flushed = buffer.enqueue(item, mode);
+            public void flush(Cause cause) {
+                buffer(null, Flush.ALWAYS, cause);
+            }
+
+            private void buffer(@Nullable T item, Flush mode, Cause cause) {
+                List<T> flushed = buffer.enqueue(item, mode, cause);
                 if (flushed != null) {
+                    resetTimeout(cause);
                     chunksSubscriber.onNext(flushed);
                 }
             }

@@ -35,10 +35,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -2336,9 +2333,10 @@ public abstract class Publisher<T> {
 
     /**
     * TODO
+    *  - source the executor correctly - currently creating a whole thread (I expect) every time we do this
     */
     public final Publisher<Iterable<T>> buffer(int targetChunkSize, Duration maximumDelay) {
-        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, maximumDelay);
+        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, maximumDelay, new ScheduledThreadPoolExecutor(1));
     }
 
     /**
