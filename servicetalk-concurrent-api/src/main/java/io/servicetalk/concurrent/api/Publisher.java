@@ -23,6 +23,7 @@ import io.servicetalk.concurrent.PublisherSource.Subscriber;
 import io.servicetalk.concurrent.PublisherSource.Subscription;
 import io.servicetalk.concurrent.SingleSource;
 import io.servicetalk.concurrent.api.BufferStrategy.Accumulator;
+import io.servicetalk.concurrent.api.BufferedPublisher.Timeout;
 import io.servicetalk.concurrent.internal.SignalOffloader;
 
 import org.slf4j.Logger;
@@ -2332,11 +2333,30 @@ public abstract class Publisher<T> {
     }
 
     /**
-    * TODO
-    *  - source the executor correctly - currently creating a whole thread (I expect) every time we do this
-    */
-    public final Publisher<Iterable<T>> buffer(int targetChunkSize, Duration maximumDelay) {
-        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, maximumDelay, new ScheduledThreadPoolExecutor(1));
+     * Buffer without timeout
+     * @param targetChunkSize Desired size of each Iterable on the returned Publisher.  Returned iterables may be
+     *                        smaller or bigger than this parameter.
+     * @return Publisher of Iterables, with each Iterable being a number of items from the source publisher
+     */
+    public final Publisher<Iterable<T>> buffer(int targetChunkSize) {
+        final Function<Runnable, Timeout> timeout = onTimeout -> new BufferedPublisher.NoTimeout();
+        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, timeout);
+    }
+
+    /**
+     * buffer with timeout
+     * @param targetChunkSize  Desired size of each Iterable on the returned Publisher.  Returned iterables may be
+     *                         smaller or bigger than this parameter.
+     * @param maximumDelay     Maximum delay between creation or flush of the buffer, and another flush being forced
+     *                         if there are items available.
+     * @param executor
+     * @return
+     */
+    public final Publisher<Iterable<T>> buffer(int targetChunkSize, Duration maximumDelay, Executor executor) {
+        final Function<Runnable, Timeout> timeout = onTimeout ->
+            new BufferedPublisher.ExecutorTimeout(executor, maximumDelay, onTimeout);
+
+        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, timeout);
     }
 
     /**

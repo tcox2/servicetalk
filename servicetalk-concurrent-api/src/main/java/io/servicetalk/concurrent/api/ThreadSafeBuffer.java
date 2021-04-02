@@ -26,24 +26,6 @@ public class ThreadSafeBuffer<T> {
         ALWAYS
     }
 
-    public enum Cause {
-
-        ON_NEXT(false),
-        ON_COMPLETE(true),
-        TIME_OUT(false);
-
-        private final boolean terminal;
-
-        Cause(boolean terminal) {
-            this.terminal = terminal;
-        }
-
-        boolean isTerminal() {
-            return terminal;
-        }
-
-    }
-
     /**
      * Enqueues an item into the buffer
      *
@@ -51,17 +33,15 @@ public class ThreadSafeBuffer<T> {
      * @param mode flush when full or always
      * @return items flushed because size was met or exceeded (length may not be size)
      */
-    public @Nullable List<T> enqueue(@Nullable T item, Flush mode, Cause cause) {
+    public @Nullable List<T> enqueue(@Nullable T item, Flush mode) {
         synchronized (lock) {
             if (item != null) {
                 buffer.add(item);
-                log("Enqueued: {}", item);
             }
 
             if (shouldFlush(mode, buffer.size())) {
                 List<T> clone = new ArrayList<>(buffer);
                 buffer.clear();
-                log("Flushed with mode {} because {}: {} items ", mode, cause, clone.size());
                 return clone;
             }
 
@@ -77,15 +57,6 @@ public class ThreadSafeBuffer<T> {
         } else {
             throw new IllegalStateException();
         }
-    }
-
-    private void log(String format, Object... args) {
-        // TODO: Log level wants to be finer
-        LOGGER.info(state() + " " + format, args);
-    }
-
-    private String state() {
-        return String.format("[%d/%d]", buffer.size(), maximumSize);
     }
 
 }

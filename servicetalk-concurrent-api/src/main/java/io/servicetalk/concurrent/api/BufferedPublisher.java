@@ -1,52 +1,31 @@
 
 package io.servicetalk.concurrent.api;
 
+import io.servicetalk.concurrent.Cancellable;
 import io.servicetalk.concurrent.PublisherSource.Subscriber;
 import io.servicetalk.concurrent.PublisherSource.Subscription;
-import io.servicetalk.concurrent.api.ThreadSafeBuffer.Cause;
 import io.servicetalk.concurrent.api.ThreadSafeBuffer.Flush;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-
+import java.util.function.Function;
 
 import static java.util.Objects.requireNonNull;
 
-// TODO:
-// timed flushing / maximum delay / thread to make them happen
-// JDK 9? multiply exact?
-// Log level on tsb
-// should exceptions re-thrown, onError to onError, be nested?
-// tests with exceptions onError etc.
-// TIMING FLUSH ON TIME
-// ScheduledThreadPoolExecutor?
-// log level
-
-
 public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(BufferedPublisher.class);
 
     private final Consumer<Subscriber<? super T>> source;
     private final int targetChunkSize;
-    private final ScheduledThreadPoolExecutor scheduler;
-    private final Duration maximumDelay;
+    private final Function<Runnable, Timeout> timeouts;
+
 
     public BufferedPublisher(Consumer<Subscriber<? super T>> source,
                              int targetChunkSize,
-                             Duration maximumDelay,
-                             ScheduledThreadPoolExecutor scheduler) {
-        requireNonNull(maximumDelay);
+                             Function<Runnable, Timeout> timeouts) {
         requireNonNull(source);
-        requireNonNull(scheduler);
-        requireNonNull(maximumDelay);
+        requireNonNull(timeouts);
 
         if (targetChunkSize < 1) {
             throw new IllegalArgumentException("targetChunkSize must be one or greater");
@@ -54,16 +33,7 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
         this.source = source;
         this.targetChunkSize = targetChunkSize;
-
-        // buffer needs a 'last flush time' on it
-        // how to ensure re-schedule while also having reset() when a flush happens
-        // you can get queue and clear it?
-        // schedul at fixed blah, then clear+repopulate on another type of flush?
-        // on vcomplete or error -> tear down
-        // you get a schedlewd future!  xcan cancel it!
-        // executor.schedule()
-        this.scheduler = scheduler;
-        this.maximumDelay = maximumDelay;
+        this.timeouts = timeouts;
     }
 
     @Override
@@ -77,37 +47,21 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
         private final ThreadSafeBuffer<T> buffer = new ThreadSafeBuffer<>(targetChunkSize);
         private Subscription itemsSubscription = new NullSubscription();
         private Subscriber<? super Iterable<T>> chunksSubscriber = new NullSubscriber<>();
-        private Runnable cancelTimeout = () -> {};
         private final Filler filler = new Filler();
 
         public void subscribe(Subscriber<? super Iterable<T>> destination) {
-            scheduleTimeout();
             source.accept(filler);
             chunksSubscriber = destination;
             chunksSubscriber.onSubscribe(new Drainer());
         }
 
-
-
-        private void resetTimeout(Cause cause) {
-            cancelTimeout.run();
-
-            if ( ! cause.isTerminal()) {
-                scheduleTimeout();
-            }
-        }
-
-        private void scheduleTimeout() {
-            ScheduledFuture<?> scheduledFuture = scheduler.schedule(() -> filler.flush(Cause.TIME_OUT), maximumDelay.toNanos(), TimeUnit.NANOSECONDS);
-            cancelTimeout = () -> {
-                if (scheduledFuture.cancel(false)) {
-                    LOGGER.info("Timeout was cancelled");
-                }
-            };
-            LOGGER.info("Timeout was scheduled");
-        }
-
         class Filler implements Subscriber<T> {
+
+            private final Timeout timeout = timeouts.apply(this::flush);
+
+            Filler() {
+                timeout.start();
+            }
 
             @Override
             public void onSubscribe(Subscription subscription) {
@@ -116,41 +70,50 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
             @Override
             public void onNext(@Nullable T item) {
-                buffer(item, Flush.WHEN_FULL, Cause.ON_NEXT);
-
-                // Timeout experiment - recreate in a test
-                /*try {
-                    Thread.sleep(1_000);
-                } catch (InterruptedException e) {
-                }*/
-                // Timeout experiment - recreate in a test
-
+                buffer(item);
             }
 
             @Override
             public void onError(Throwable error) {
-                cancelTimeout.run();
-                chunksSubscriber.onError(error);
+                try {
+                    chunksSubscriber.onError(error);
+                } finally {
+                    timeout.stop();
+                }
             }
 
             @Override
             public void onComplete() {
-                flush(Cause.ON_COMPLETE);
-                chunksSubscriber.onComplete();
-            }
-
-            public void flush(Cause cause) {
-                buffer(null, Flush.ALWAYS, cause);
-            }
-
-            private void buffer(@Nullable T item, Flush mode, Cause cause) {
-                List<T> flushed = buffer.enqueue(item, mode, cause);
-                if (flushed != null) {
-                    resetTimeout(cause);
-                    chunksSubscriber.onNext(flushed);
+                try {
+                    flush();
+                    chunksSubscriber.onComplete();
+                } finally {
+                    timeout.stop();
                 }
             }
 
+            private void flush() {
+                System.out.println("FLUSH TRIGGERED");
+                try {
+                    List<T> flushed = buffer.enqueue(null, Flush.ALWAYS);
+                    if (flushed != null && !flushed.isEmpty()) {
+                        chunksSubscriber.onNext(flushed);
+                        System.out.println("chunks sub was told - FLUSH TRIGGERED: " + flushed);
+                    }
+                } finally {
+                    timeout.stop();
+                    timeout.start();
+                }
+            }
+
+            private void buffer(@Nullable T item) {
+                List<T> flushed = buffer.enqueue(item, Flush.WHEN_FULL);
+                if (flushed != null) {
+                    if ( ! flushed.isEmpty()) {
+                        chunksSubscriber.onNext(flushed);
+                    }
+                }
+            }
         }
 
         class Drainer implements Subscription {
@@ -176,9 +139,49 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
                     return Long.MAX_VALUE;
                 }
             }
+        }
+    }
 
+    interface Timeout {
+        void start();
+        void stop();
+    }
+
+    static class NoTimeout implements Timeout {
+        @Override
+        public void start() {
         }
 
+        @Override
+        public void stop() {
+        }
+    }
+
+    static class ExecutorTimeout implements Timeout {
+        private final Executor executor;
+        private final Duration duration;
+        private final Runnable runnable;
+
+        private volatile Cancellable cancellable = () -> {};
+
+        ExecutorTimeout(Executor executor, Duration duration, Runnable runnable) {
+            requireNonNull(executor);
+            requireNonNull(duration);
+            requireNonNull(runnable);
+            this.executor = executor;
+            this.duration = duration;
+            this.runnable = runnable;
+        }
+
+        @Override
+        public void start() {
+            cancellable = executor.schedule(runnable, duration);
+        }
+
+        @Override
+        public void stop() {
+            cancellable.cancel();
+        }
     }
 
 }
