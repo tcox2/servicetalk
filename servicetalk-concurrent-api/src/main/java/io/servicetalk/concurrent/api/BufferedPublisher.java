@@ -5,6 +5,8 @@ import io.servicetalk.concurrent.Cancellable;
 import io.servicetalk.concurrent.PublisherSource.Subscriber;
 import io.servicetalk.concurrent.PublisherSource.Subscription;
 import io.servicetalk.concurrent.api.ThreadSafeBuffer.Flush;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.time.Duration;
@@ -19,13 +21,16 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
     private final Consumer<Subscriber<? super T>> source;
     private final int targetChunkSize;
     private final Function<Runnable, Timeout> timeouts;
+    private final BufferInstrumentation<T> instrumentation;
 
 
     public BufferedPublisher(Consumer<Subscriber<? super T>> source,
                              int targetChunkSize,
-                             Function<Runnable, Timeout> timeouts) {
+                             Function<Runnable, Timeout> timeouts,
+                             BufferInstrumentation<T> instrumentation) {
         requireNonNull(source);
         requireNonNull(timeouts);
+        requireNonNull(instrumentation);
 
         if (targetChunkSize < 1) {
             throw new IllegalArgumentException("targetChunkSize must be one or greater");
@@ -34,10 +39,13 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
         this.source = source;
         this.targetChunkSize = targetChunkSize;
         this.timeouts = timeouts;
+        this.instrumentation = instrumentation;
+
     }
 
     @Override
     protected void handleSubscribe(Subscriber<? super Iterable<T>> subscriber) {
+        instrumentation.subscribed();
         BufferedSubscription subscription = new BufferedSubscription();
         subscription.subscribe(subscriber);
     }
@@ -57,7 +65,7 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
         class Filler implements Subscriber<T> {
 
-            private final Timeout timeout = timeouts.apply(this::flush);
+            private final Timeout timeout = timeouts.apply(this::timeout);
 
             Filler() {
                 timeout.start();
@@ -85,21 +93,24 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
             @Override
             public void onComplete() {
                 try {
-                    flush();
+                    flush("onComplete");
                     chunksSubscriber.onComplete();
                 } finally {
                     timeout.stop();
                 }
             }
 
-            private void flush() {
-                System.out.println("FLUSH TRIGGERED");
+            private void timeout() {
+                flush("timeout");
+            }
+
+            private void flush(String cause) {
                 try {
                     List<T> flushed = buffer.enqueue(null, Flush.ALWAYS);
-                    if (flushed != null && !flushed.isEmpty()) {
+                    if (!flushed.isEmpty()) {
                         chunksSubscriber.onNext(flushed);
-                        System.out.println("chunks sub was told - FLUSH TRIGGERED: " + flushed);
                     }
+                    instrumentation.flushed(buffer, flushed.size(), cause);
                 } finally {
                     timeout.stop();
                     timeout.start();
@@ -108,11 +119,10 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
             private void buffer(@Nullable T item) {
                 List<T> flushed = buffer.enqueue(item, Flush.WHEN_FULL);
-                if (flushed != null) {
-                    if ( ! flushed.isEmpty()) {
-                        chunksSubscriber.onNext(flushed);
-                    }
+                if (!flushed.isEmpty()) {
+                    chunksSubscriber.onNext(flushed);
                 }
+                instrumentation.enqueued(buffer, item, flushed.size());
             }
         }
 
@@ -121,12 +131,14 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
             @Override
             public void cancel() {
                 // no more chunks wanted
+                instrumentation.cancelled();
                 itemsSubscription.cancel();
             }
 
             @Override
             public void request(long chunksCount) {
                 long itemsCount = chunksToItems(chunksCount);
+                instrumentation.requested(itemsCount, chunksCount);
                 itemsSubscription.request(itemsCount);
             }
 
@@ -181,6 +193,64 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
         @Override
         public void stop() {
             cancellable.cancel();
+        }
+    }
+
+    interface BufferInstrumentation<T> {
+        default void subscribed() {
+        }
+
+        default void enqueued(ThreadSafeBuffer<T> buffer, T item, int flushedItemCount) {
+        }
+
+        default void flushed(ThreadSafeBuffer<T> buffer, int flushedItemCount, String cause) {
+        }
+
+        default void cancelled() {
+        }
+
+        default void requested(long itemsCount, long chunksCount) {
+        }
+
+    }
+
+    public static class NullBufferInstrumentation<T> implements BufferInstrumentation<T> {
+    }
+
+    public static class LoggingBufferInstrumentation<T> implements BufferInstrumentation<T> {
+        private final Logger logger = LoggerFactory.getLogger("Buffer");
+
+        @Override
+        public void subscribed() {
+            logger.info("Subscribed");
+        }
+
+        @Override
+        public void enqueued(ThreadSafeBuffer<T> buffer, T item, int flushedItemCount) {
+            logger.info("[{}] Enqueued item [{}]{}", buffer, item,
+                    flushedItemCount < 1 ? "" : " causing a flush of [" + flushedItemCount + "] items");
+        }
+
+        @Override
+        public void flushed(ThreadSafeBuffer<T> buffer, int flushedItemCount, String cause) {
+            logger.info("[{}] Explicit flush of {} items due to [{}]", buffer, flushedItemCount, cause);
+        }
+
+        @Override
+        public void cancelled() {
+            logger.info("Cancelled");
+        }
+
+        @Override
+        public void requested(long itemsCount, long chunksCount) {
+            logger.info("Request for [{}] chunks became request for [{}] items", format(chunksCount), format(itemsCount));
+        }
+
+        private static String format(long value) {
+            if (value == Long.MAX_VALUE) {
+                return "Long.MAX_VALUE";
+            }
+            return "" + value;
         }
     }
 

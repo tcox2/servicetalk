@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class ThreadSafeBuffer<T> {
@@ -33,7 +34,7 @@ public class ThreadSafeBuffer<T> {
      * @param mode flush when full or always
      * @return items flushed because size was met or exceeded (length may not be size)
      */
-    public @Nullable List<T> enqueue(@Nullable T item, Flush mode) {
+    public List<T> enqueue(@Nullable T item, Flush mode) {
         synchronized (lock) {
             if (item != null) {
                 buffer.add(item);
@@ -45,7 +46,7 @@ public class ThreadSafeBuffer<T> {
                 return clone;
             }
 
-            return null;
+            return Collections.emptyList();
         }
     }
 
@@ -56,6 +57,13 @@ public class ThreadSafeBuffer<T> {
             return size >= maximumSize;
         } else {
             throw new IllegalStateException();
+        }
+    }
+
+    @Override
+    public String toString() {
+        synchronized (lock) {
+            return buffer.size() + "/" + maximumSize;
         }
     }
 
