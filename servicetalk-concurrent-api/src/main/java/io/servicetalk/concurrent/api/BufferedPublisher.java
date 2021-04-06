@@ -84,6 +84,7 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
             @Override
             public void onError(Throwable error) {
                 try {
+                    instrumentation.error(error);
                     chunksSubscriber.onError(error);
                 } finally {
                     timeout.stop();
@@ -212,6 +213,9 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
         default void requested(long itemsCount, long chunksCount) {
         }
 
+        default void error(Throwable error) {
+        }
+
     }
 
     public static class NullBufferInstrumentation<T> implements BufferInstrumentation<T> {
@@ -252,6 +256,12 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
             }
             return "" + value;
         }
+
+        @Override
+        public void error(Throwable error) {
+            logger.error("Exception propagated from items publisher to chunks publisher", error);
+        }
+
     }
 
 }

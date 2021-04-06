@@ -15,7 +15,6 @@
  */
 package io.servicetalk.concurrent.reactivestreams.tck;
 
-import io.servicetalk.concurrent.api.BufferedPublisher;
 import io.servicetalk.concurrent.api.BufferedPublisher.LoggingBufferInstrumentation;
 import io.servicetalk.concurrent.api.Publisher;
 
