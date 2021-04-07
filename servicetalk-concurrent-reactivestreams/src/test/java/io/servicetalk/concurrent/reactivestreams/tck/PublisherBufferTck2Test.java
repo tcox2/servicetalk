@@ -15,7 +15,7 @@
  */
 package io.servicetalk.concurrent.reactivestreams.tck;
 
-import io.servicetalk.concurrent.api.BufferedPublisher.LoggingBufferInstrumentation;
+import io.servicetalk.concurrent.api.BufferedPublisher.Logging;
 import io.servicetalk.concurrent.api.Publisher;
 
 import org.testng.annotations.Test;
@@ -27,7 +27,7 @@ public class PublisherBufferTck2Test extends AbstractPublisherOperatorTckTest<In
 
     @Override
     protected Publisher<Integer> composePublisher(Publisher<Integer> publisher, int elements) {
-        return publisher.buffer(1, new LoggingBufferInstrumentation<>()).flatMapConcatIterable(identity());
+        return publisher.buffer(1, new Logging<>()).flatMapConcatIterable(identity());
     }
 
 }

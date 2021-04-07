@@ -23,7 +23,9 @@ import io.servicetalk.concurrent.PublisherSource.Subscriber;
 import io.servicetalk.concurrent.PublisherSource.Subscription;
 import io.servicetalk.concurrent.SingleSource;
 import io.servicetalk.concurrent.api.BufferStrategy.Accumulator;
-import io.servicetalk.concurrent.api.BufferedPublisher.BufferInstrumentation;
+import io.servicetalk.concurrent.api.BufferedPublisher.BufferStatusLogging;
+import io.servicetalk.concurrent.api.BufferedPublisher.ExecutorTimeout;
+import io.servicetalk.concurrent.api.BufferedPublisher.NoTimeout;
 import io.servicetalk.concurrent.api.BufferedPublisher.Timeout;
 import io.servicetalk.concurrent.internal.SignalOffloader;
 
@@ -2339,9 +2341,10 @@ public abstract class Publisher<T> {
      *                        smaller or bigger than this parameter.
      * @return Publisher of Iterables, with each Iterable being a number of items from the source publisher
      */
-    public final Publisher<Iterable<T>> buffer(int targetChunkSize, BufferInstrumentation<T> instrumentation) {
-        final Function<Runnable, Timeout> timeout = onTimeout -> new BufferedPublisher.NoTimeout();
-        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, timeout, instrumentation);
+    // todo: consider property to enable/disable logging instead of method parameter
+    public final Publisher<Iterable<T>> buffer(int targetChunkSize, BufferStatusLogging<T> logging) {
+        final Function<Runnable, Timeout> timeout = onTimeout -> new NoTimeout();
+        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, timeout, logging);
     }
 
     /**
@@ -2353,12 +2356,11 @@ public abstract class Publisher<T> {
      * @param executor
      * @return
      */
+    // todo: consider property to enable/disable logging instead of method parameter
     public final Publisher<Iterable<T>> buffer(int targetChunkSize, Duration maximumDelay, Executor executor,
-                                               BufferInstrumentation<T> instrumentation) {
-        final Function<Runnable, Timeout> timeout = onTimeout ->
-            new BufferedPublisher.ExecutorTimeout(executor, maximumDelay, onTimeout);
-
-        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, timeout, instrumentation);
+                                               BufferStatusLogging<T> logging) {
+        final Function<Runnable, Timeout> timeout = onTimeout -> new ExecutorTimeout(executor, maximumDelay, onTimeout);
+        return new BufferedPublisher<T>(this::subscribeInternal, targetChunkSize, timeout, logging);
     }
 
     /**

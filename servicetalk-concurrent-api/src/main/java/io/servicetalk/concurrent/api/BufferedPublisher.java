@@ -21,13 +21,13 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
     private final Consumer<Subscriber<? super T>> source;
     private final int targetChunkSize;
     private final Function<Runnable, Timeout> timeouts;
-    private final BufferInstrumentation<T> instrumentation;
+    private final BufferStatusLogging<T> instrumentation;
 
 
     public BufferedPublisher(Consumer<Subscriber<? super T>> source,
                              int targetChunkSize,
                              Function<Runnable, Timeout> timeouts,
-                             BufferInstrumentation<T> instrumentation) {
+                             BufferStatusLogging<T> instrumentation) {
         requireNonNull(source);
         requireNonNull(timeouts);
         requireNonNull(instrumentation);
@@ -197,7 +197,7 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
         }
     }
 
-    interface BufferInstrumentation<T> {
+    interface BufferStatusLogging<T> {
         default void subscribed() {
         }
 
@@ -218,10 +218,10 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
     }
 
-    public static class NullBufferInstrumentation<T> implements BufferInstrumentation<T> {
+    public static class NoLogging<T> implements BufferStatusLogging<T> {
     }
 
-    public static class LoggingBufferInstrumentation<T> implements BufferInstrumentation<T> {
+    public static class Logging<T> implements BufferStatusLogging<T> {
         private final Logger logger = LoggerFactory.getLogger("Buffer");
 
         @Override
@@ -259,7 +259,8 @@ public class BufferedPublisher<T> extends Publisher<Iterable<T>> {
 
         @Override
         public void error(Throwable error) {
-            logger.error("Exception propagated from items publisher to chunks publisher", error);
+            logger.error("Exception propagated from items publisher to chunks publisher: " +
+                    error.getClass().getCanonicalName(), error);
         }
 
     }
